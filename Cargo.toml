@@ -1,0 +1,7 @@
+[package]
+name = "prompter"
+version = "0.1.0"
+authors = ["dgd25"]
+
+[dependencies]
+term = "0.4.6"
