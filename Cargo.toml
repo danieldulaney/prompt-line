@@ -5,3 +5,6 @@ authors = ["dgd25"]
 
 [dependencies]
 term = "0.4.6"
+
+[dev-dependencies]
+itertools = "0.6.5"

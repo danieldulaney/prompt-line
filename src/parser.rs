@@ -65,7 +65,7 @@ impl Error for ParserError {
 
 pub type ParserResult<'s> = Result<Unit<'s>, ParserError>;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Format {
     foreground: Option<Color>,
     background: Option<Color>,
@@ -85,11 +85,21 @@ impl Format {
     }
 
     fn rollup(list: &[Format]) -> Format {
-        let result = list.iter().rev().fold(Format::empty(), Format::fill);
-        return result;
+        let mut current = Format::empty();
+
+        // .rev() because the stack needs to get iterated from top down (last added to first).
+        // Fill gives priority if a value is already set, so you want to start with the highest
+        // priority, then go down the list.
+        for f in list.iter().rev() {
+            current = current.fill(f)
+        }
+
+        return current;
     }
 
-    fn fill(self, fill: &Format) -> Format {
+    // Given two `Format`s, returns a new Format that combines them, giving priority to the first
+    // format.
+    fn fill(&self, fill: &Format) -> Format {
         Format {
             foreground: self.foreground.or(fill.foreground),
             background: self.background.or(fill.background),
@@ -99,14 +109,14 @@ impl Format {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Content<'s> {
     Literal(&'s str),
     Command(&'s str),
     Builtin(&'s str),
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Unit<'s> {
     format: Format,
     content: Content<'s>,
@@ -159,7 +169,6 @@ pub struct Parser<'s> {
     next: Option<TokenizerResult<'s>>,
 
 }
-
 
 impl<'s> Parser<'s> {
 
@@ -406,140 +415,265 @@ impl<'s> Iterator for Parser<'s> {
 mod test {
     use super::*;
 
-    // Given a number, generates a unique format
-    // There are currently:
-    //    17 foreground
-    //    17 background
-    //     3 italic
-    //     3 underline
-    //     =
-    //  2601 values
-    const FORMAT_COUNT: u32 = 2601;
-    fn format(index: u32) -> (Vec<Token<'static>>, Format) {
-        let mut v = Vec::new();
-        let mut format = Format::empty();
+    // Given an index, return a format and the tokens to produce it
+    // Indices are taken mod FORMAT_COUNT
+    const FORMAT_COUNT: i32 = 16 * 2 * 2;
+    fn format(index: i32) -> (Vec<Token<'static>>, Format){
+        let phase = index % 16;
+        let style = index / 16 % 2;
+        let color = color(index / 32 % 16);
 
-        let fg = color(index % 17);
-        let bg = color((index / 17) % 17);
-        let italic = (index / (17 * 17)) % 3;
-        let underline = (index / (17 * 17 * 3)) % 3;
+        let mut tokens = Vec::with_capacity(12);
 
-        // Foreground
-        match fg {
-            Some(color) => {
-                v.push(Token {location: 0, lexeme: "fg", kind: TokenKind::Foreground});
-                v.push(Token {location: 0, lexeme: ":", kind: TokenKind::Colon});
-                v.push(Token {location: 0, lexeme: color.0, kind: TokenKind::Identifier});
-                format.foreground = Some(color.1);
+        let format = Format {
+            background: match phase % 2 {
+                0 => None,
+                _ => {
+                    tokens.push(Token { location: 0, kind: TokenKind::Background, lexeme: "bg" });
+                    tokens.push(Token { location: 0, kind: TokenKind::Colon, lexeme: ":" });
+                    tokens.push(Token { location: 0, kind: TokenKind::Identifier, lexeme: color.0 });
+                    Some(color.1)
+                }
             },
-            _ => {},
-        }
-
-        // Background
-        match bg {
-            Some(color) => {
-                v.push(Token {location: 0, lexeme: "bg", kind: TokenKind::Background});
-                v.push(Token {location: 0, lexeme: ":", kind: TokenKind::Colon});
-                v.push(Token {location: 0, lexeme: color.0, kind: TokenKind::Identifier});
-                format.background = Some(color.1);
-            }
-            None => {},
-        }
-
-        // Italic
-        match italic {
-            0 => {
-                v.push(Token {location: 0, lexeme: "style", kind: TokenKind::Style});
-                v.push(Token {location: 0, lexeme: ":", kind: TokenKind::Colon});
-                v.push(Token {location: 0, lexeme: "italic", kind: TokenKind::Identifier});
-                format.italic = Some(true);
+            foreground: match (phase / 2) % 2 {
+                0 => None,
+                _ => {
+                    tokens.push(Token { location: 0, kind: TokenKind::Foreground, lexeme: "fg" });
+                    tokens.push(Token { location: 0, kind: TokenKind::Colon, lexeme: ":" });
+                    tokens.push(Token { location: 0, kind: TokenKind::Identifier, lexeme: color.0 });
+                    Some(color.1)
+                },
             },
-            1 => {
-                v.push(Token {location: 0, lexeme: "style", kind: TokenKind::Style});
-                v.push(Token {location: 0, lexeme: ":", kind: TokenKind::Colon});
-                v.push(Token {location: 0, lexeme: "noitalic", kind: TokenKind::Identifier});
-                format.italic = Some(false);
+            italic: match (phase / 4) % 2 {
+                0 => None,
+                _ => {
+                    tokens.push(Token { location: 0, kind: TokenKind::Style, lexeme: "style" });
+                    tokens.push(Token { location: 0, kind: TokenKind::Colon, lexeme: ":" });
+                    if style != 0 {tokens.push(Token { location: 0, kind: TokenKind::Identifier, lexeme: "italic" });}
+                    else {tokens.push(Token { location: 0, kind: TokenKind::Identifier, lexeme: "noitalic"});}
+                    Some(style != 0)
+                },
             },
-            _ => {},
-        }
-
-        // Underline
-        match underline {
-            0 => {
-                v.push(Token {location: 0, lexeme: "style", kind: TokenKind::Style});
-                v.push(Token {location: 0, lexeme: ":", kind: TokenKind::Colon});
-                v.push(Token {location: 0, lexeme: "underline", kind: TokenKind::Identifier});
-                format.underline = Some(true);
+            underline: match (phase / 8) % 2 {
+                0 => None,
+                _ => {
+                    tokens.push(Token { location: 0, kind: TokenKind::Style, lexeme: "style" });
+                    tokens.push(Token { location: 0, kind: TokenKind::Colon, lexeme: ":" });
+                    if style != 0 {tokens.push(Token { location: 0, kind: TokenKind::Identifier, lexeme: "underline" });}
+                    else {tokens.push(Token { location: 0, kind: TokenKind::Identifier, lexeme: "nounderline"});}
+                    Some(style != 0)
+                },
             },
-            1 => {
-                v.push(Token {location: 0, lexeme: "style", kind: TokenKind::Style});
-                v.push(Token {location: 0, lexeme: ":", kind: TokenKind::Colon});
-                v.push(Token {location: 0, lexeme: "nounderline", kind: TokenKind::Identifier});
-                format.underline = Some(false);
-            },
-            _ => {},
-        }
+        };
 
-        return (v, format);
-
+        return (tokens, format)
     }
 
-    fn color(index: u32) -> Option<(&'static str, Color)> {
-        match index {
-            0  => Some(("black", 0)),
-            1  => Some(("red", 1)),
-            2  => Some(("green", 2)),
-            3  => Some(("yellow", 3)),
-            4  => Some(("blue", 4)),
-            5  => Some(("magenta", 5)),
-            6  => Some(("cyan", 6)),
-            7  => Some(("white", 7)),
-            8  => Some(("brightblack", 8)),
-            9  => Some(("brightred", 9)),
-            10 => Some(("brightgreen", 10)),
-            11 => Some(("brightyellow", 11)),
-            12 => Some(("brightblue", 12)),
-            13 => Some(("brightmagenta", 13)),
-            14 => Some(("brightcyan", 14)),
-            15 => Some(("brightwhite", 15)),
-            _ => None,
+    // Given an index, return a color name and value
+    // Indices are taken mod 16
+    fn color(index: i32) -> (&'static str, Color) {
+        match index % 16 {
+            0  => ("black", 0),
+            1  => ("red", 1),
+            2  => ("green", 2),
+            3  => ("yellow", 3),
+            4  => ("blue", 4),
+            5  => ("magenta", 5),
+            6  => ("cyan", 6),
+            7  => ("white", 7),
+            8  => ("brightblack", 8),
+            9  => ("brightred", 9),
+            10 => ("brightgreen", 10),
+            11 => ("brightyellow", 11),
+            12 => ("brightblue", 12),
+            13 => ("brightmagenta", 13),
+            14 => ("brightcyan", 14),
+            15 => ("brightwhite", 15),
+            _ => panic!("Somehow, index % 16 was outside the range [0, 15]"),
         }
     }
 
-    fn create_content() -> Vec<(Vec<Token<'static>>, Content<'static>)> {
-        vec![
-            (
-                vec![Token {location: 0, lexeme: "\"test string\"", kind: TokenKind::String}],
-                Content::Literal("\"test string\""),
+    // Given an index, return a chunk of content and the tokens to produce it
+    // Indices are taken mod CONTENT_COUNT
+    const CONTENT_COUNT: i32 = 3;
+    fn content(index: i32) -> (Vec<Token<'static>>, Content<'static>) {
+        match index % CONTENT_COUNT {
+            0 => (
+                vec![Token { location: 0, lexeme: "\"test string\"", kind: TokenKind::String }],
+                Content::Literal("test string"),
             ),
-            (
+            1 => (
                 vec![
-                    Token {location: 0, lexeme: "(", kind: TokenKind::LeftParen},
-                    Token {location: 0, lexeme: "test_builtin", kind: TokenKind::Identifier},
-                    Token {location: 0, lexeme: ")", kind: TokenKind::RightParen},
+                    Token { location: 0, lexeme: "(", kind: TokenKind::LeftParen },
+                    Token { location: 0, lexeme: "test_builtin", kind: TokenKind::Identifier },
+                    Token { location: 0, lexeme: ")", kind: TokenKind::RightParen },
                 ],
                 Content::Builtin("test_builtin"),
             ),
-            (
+            2 => (
                 vec![
-                    Token {location: 0, lexeme: "[", kind: TokenKind::LeftSquare},
-                    Token {location: 0, lexeme: "test_command", kind: TokenKind::Identifier},
-                    Token {location: 0, lexeme: "]", kind: TokenKind::RightSquare},
+                    Token { location: 0, lexeme: "[", kind: TokenKind::LeftSquare },
+                    Token { location: 0, lexeme: "test_command", kind: TokenKind::Identifier },
+                    Token { location: 0, lexeme: "]", kind: TokenKind::RightSquare },
                 ],
                 Content::Command("test_command"),
             ),
-        ]
+            _ => panic!("Test programmer error: CONTENT_COUNT doesn't match content")
+        }
+    }
+
+    fn one_token(kind: TokenKind, lexeme: &str) -> std::iter::Once<Token> {
+        std::iter::once(Token {
+            kind,
+            lexeme,
+            location: 0,
+        })
+    }
+
+    fn some_tokens<'s>(kind: TokenKind, lexeme: &'s str, count: usize) -> std::iter::Take<std::iter::Repeat<Token<'s>>> {
+        std::iter::repeat(Token {
+            kind,
+            lexeme,
+            location: 0,
+        }).take(count)
+    }
+
+    #[test]
+    fn test_format_rollup() {
+        for ((_, format1), (_, format2), (_, format3)) in iproduct!(0..FORMAT_COUNT, 0..FORMAT_COUNT, 0..FORMAT_COUNT).map(|(a,b,c)| (format(a), format(b), format(c))) {
+
+                let correct_format = Format {
+                    foreground: format3.foreground.or(format2.foreground).or(format1.foreground),
+                    background: format3.background.or(format2.background).or(format1.background),
+                    italic: format3.italic.or(format2.italic).or(format1.italic),
+                    underline: format3.underline.or(format2.underline).or(format1.underline),
+                };
+
+                let stack = vec![format1, format2, format3];
+
+                let actual_format = Format::rollup(&stack);
+
+                assert_eq!(correct_format, actual_format, "Expected:\n{:?}\nbut got\n{:?}\nwhen rolling up stack\n{:?}", correct_format, actual_format, stack);
+
+        }
     }
 
     #[test]
     fn test_parse_formatted_content() {
-        for (format_tokens, correct_format) in (0..FORMAT_COUNT).map(format) {
-            for &(ref content_tokens, ref correct_content) in create_content().into_iter() {
-                let mut p = Parser::new(&mut
-                    format_tokens.iter()
-                        .chain(content_tokens.iter())
-                        .map(Result::Ok));
-            }
+        for (f, c) in iproduct!(0..FORMAT_COUNT, 0..CONTENT_COUNT).map(|(a,b)| (format(a), content(b))) {
+
+            let mut all_tokens = f.0.into_iter()
+                .chain(c.0.into_iter())
+                .map(Result::Ok);
+
+            let mut parser = Parser::new(&mut all_tokens);
+
+            let unit = parser.next().unwrap().unwrap();
+
+            assert_eq!(unit.format, f.1);
+            assert_eq!(unit.content, c.1);
+
+            assert_eq!(parser.next(), None);
+        }
+    }
+
+    // Tests token sequences of the form:
+    // f_a { c_a } c_0
+    // Confirms that:
+    // Group formats are applied within the group
+    // Group formats are not applied after the group
+    #[test]
+    fn test_parse_single_group() {
+        for (f_a, c_a, c_0) in iproduct!(0..FORMAT_COUNT, 0..CONTENT_COUNT, 0..CONTENT_COUNT).map(|(a,b,c)| (format(a), content(b), content(c))) {
+
+            let mut tokens = f_a.0.into_iter()
+                .chain(one_token(TokenKind::LeftCurly, "{"))
+                .chain(c_a.0.into_iter())
+                .chain(one_token(TokenKind::RightCurly, "}"))
+                .chain(c_0.0.into_iter())
+                .map(|t| Ok::<_, tokenizer::TokenizerError>(t));
+
+            let mut parser = Parser::new(&mut tokens);
+
+            let unit = parser.next().unwrap().unwrap();
+            assert_eq!(unit.format, f_a.1);
+            assert_eq!(unit.content, c_a.1);
+
+            let unit = parser.next().unwrap().unwrap();
+            assert_eq!(unit.format, Format::empty());
+            assert_eq!(unit.content, c_0.1);
+
+            assert_eq!(parser.next(), None);
+        }
+    }
+
+    // Tests token sequences of the form
+    // f_a { f_b { c_ba } c_a } c_0
+    // Confirms that:
+    // Group formats roll up within nested groups
+    // Group formats are cleared outside of nested group
+    #[test]
+    fn test_parse_nested_group() {
+        for (f_a, f_b, c_ba, c_a, c_0) in
+            iproduct!(0..FORMAT_COUNT, 0..FORMAT_COUNT, 0..CONTENT_COUNT, 0..CONTENT_COUNT, 0..CONTENT_COUNT)
+                .map(|(a,b,c,d,e)| (format(a), format(b), content(c), content(d), content(e))) {
+
+            let mut tokens = f_a.0.into_iter()
+                .chain(one_token(TokenKind::LeftCurly, "{"))
+                .chain(f_b.0.into_iter())
+                .chain(one_token(TokenKind::LeftCurly, "{"))
+                .chain(c_ba.0.into_iter())
+                .chain(one_token(TokenKind::RightCurly, "}"))
+                .chain(c_a.0.into_iter())
+                .chain(one_token(TokenKind::RightCurly, "}"))
+                .chain(c_0.0.into_iter())
+                .map(|t| Ok(t));
+
+            let mut parser = Parser::new(&mut tokens);
+
+            let unit = parser.next().unwrap().unwrap();
+            assert_eq!(unit.format, f_b.1.fill(&f_a.1));
+            assert_eq!(unit.content, c_ba.1);
+
+            let unit = parser.next().unwrap().unwrap();
+            assert_eq!(unit.format, f_a.1);
+            assert_eq!(unit.content, c_a.1);
+
+            let unit = parser.next().unwrap().unwrap();
+            assert_eq!(unit.format, Format::empty());
+            assert_eq!(unit.content, c_0.1);
+        }
+    }
+
+    // Tests deep nesting
+    // f_a { { { { { { f_b { { { c_ba } } } } } } } } } c_0
+    #[test]
+    fn test_deeply_nested_group() {
+        for (f_a, f_b, c_ba, c_0) in
+            iproduct!(0..FORMAT_COUNT, 0..FORMAT_COUNT, 0..CONTENT_COUNT, 0..CONTENT_COUNT)
+                .map(|(a,b,c,d)| (format(a), format(b), content(c), content(d))) {
+
+            let mut tokens = f_a.0.into_iter()
+                .chain(some_tokens(TokenKind::LeftCurly, "{", 6))
+                .chain(f_b.0.into_iter())
+                .chain(some_tokens(TokenKind::LeftCurly, "{", 3))
+                .chain(c_ba.0.into_iter())
+                .chain(some_tokens(TokenKind::RightCurly, "}", 9))
+                .chain(c_0.0.into_iter())
+                .map(|t| Ok::<_, tokenizer::TokenizerError>(t));
+
+            let mut parser = Parser::new(&mut tokens);
+
+            let unit = parser.next().unwrap().unwrap();
+            assert_eq!(unit.format, f_b.1.fill(&f_a.1));
+            assert_eq!(unit.content, c_ba.1);
+
+            let unit = parser.next().unwrap().unwrap();
+            assert_eq!(unit.format, Format::empty());
+            assert_eq!(unit.content, c_0.1);
+
+            assert_eq!(parser.next(), None);
+
         }
     }
 }

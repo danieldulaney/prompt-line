@@ -1,3 +1,7 @@
+#[macro_use]
+#[cfg(test)]
+extern crate itertools;
+
 mod tokenizer;
 mod parser;
 
