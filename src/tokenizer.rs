@@ -12,23 +12,49 @@ use std::error::Error;
 use std::fmt::Display;
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct TokenizerError {
+pub enum TokenizerError {
 
-    /// The index in the source, in bytes, at which the error occurred.
-    pub location: usize,
+    /// Unexpected character
+    /// location, actual, expected
+    BadChar(usize, Option<char>, Option<char>),
 
-    /// A description of the error.
-    description: String,
+    /// Bad identifier
+    /// Generally caused when an identifier consumer is called on a non-identifier character
+    /// location, character
+    NonIdentifier(usize, Option<char>),
+
+
 }
 
 impl Display for TokenizerError {
+
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "Tokenizer error at byte {}: {}", self.location, self.description)
+        match *self {
+            TokenizerError::BadChar(location, Some(actual), Some(expected)) =>
+                write!(f, "expected '{}' but got '{}' at byte {}", expected, actual, location),
+            TokenizerError::BadChar(location, Some(actual), None) =>
+                write!(f, "unexpected character '{}' at byte {}", actual, location),
+            TokenizerError::BadChar(location, None, Some(expected)) =>
+                write!(f, "expected character '{}' at byte {}", expected, location),
+            TokenizerError::BadChar(location, None, None) =>
+                write!(f, "bad character at byte {}", location),
+
+            TokenizerError::NonIdentifier(location, None) =>
+                write!(f, "tried and failed to parse identifier at byte {}", location),
+            TokenizerError::NonIdentifier(location, Some(actual)) =>
+                write!(f, "tried and failed to parse '{}' as the start of an identifier at byte {}", actual, location),
+        }
     }
 }
 
 impl Error for TokenizerError {
-    fn description(&self) -> &str { &self.description }
+    fn description(&self) -> &str {
+        match *self {
+            TokenizerError::BadChar(_, _, _) => "bad character",
+            TokenizerError::NonIdentifier(_, _) => "tried and failed to parse identifier",
+        }
+    }
+
     fn cause(&self) -> Option<&Error> { None }
 }
 
@@ -50,18 +76,22 @@ pub enum TokenKind {
 
     LeftCurly,
     RightCurly,
-    LeftSquare,
-    RightSquare,
-    LeftParen,
-    RightParen,
     Colon,
     Foreground,
     Background,
     Style,
     Identifier,
     String,
+    ParenSurround,
+    SquareSurround,
     EOF, // End of file
 
+}
+
+impl Display for TokenKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
 }
 
 /// An `Iterator` that reads through a source string and yields `Token`s as it goes.
@@ -162,19 +192,20 @@ impl<'s> Tokenizer<'s> {
         &self.source[start .. self.current_pos]
     }
 
-    /// Produces an error result given a string literal (a.k.a. string slice) description.
-    fn error_str(&mut self, description: &'s str) -> TokenizerResult<'s> {
-        self.error(String::from(description))
-    }
-
-    /// Produces an error result given an owned string.
-    fn error(&mut self, description: String) -> TokenizerResult<'s> {
+    /// Produces an error result for a bad character
+    ///
+    /// Optionally takes the character that was expected
+    fn bad_char(&mut self, expected: Option<char>) -> TokenizerResult<'s> {
         self.no_more = true;
 
-        Err(TokenizerError {
-            location: self.current_pos,
-            description,
-        })
+        Err(TokenizerError::BadChar(self.current_pos, self.current_char, expected))
+    }
+
+    /// Produces and error result for a bad identifier
+    fn non_identifier(&mut self) -> TokenizerResult<'s> {
+        self.no_more = true;
+
+        Err(TokenizerError::NonIdentifier(self.current_pos, self.current_char))
     }
 
     /// Consumes a single-character token, producing a success result.
@@ -217,7 +248,7 @@ impl<'s> Tokenizer<'s> {
         let lexeme = self.preceding_chunk(start);
 
         if start == self.current_pos {
-            self.error_str("tried to parse zero-length identifier")
+            self.non_identifier()
         } else {
             // Figure out what type it is
             // Default to a generic Identifier
@@ -253,7 +284,7 @@ impl<'s> Tokenizer<'s> {
 
         // Consume the opening character
         if !self.consume(first) {
-            return self.error(format!("tried to parse {:?} but could not consume leading '{}'", kind, first));
+            return self.bad_char(Some(first));
         }
 
         // Consume the body
@@ -263,7 +294,7 @@ impl<'s> Tokenizer<'s> {
 
         // Consume the closing character
         if !self.consume(last) {
-            return self.error(format!("expected closing '{}' after '{}' in {:?}", last, first, kind));
+            return self.bad_char(Some(last));
         }
 
         Ok(Token {
@@ -303,14 +334,12 @@ impl<'s> Iterator for Tokenizer<'s> {
             Some(match self.current_char.expect("Checked for is_finished()") {
                 '{' => self.single_token(TokenKind::LeftCurly),
                 '}' => self.single_token(TokenKind::RightCurly),
-                '[' => self.single_token(TokenKind::LeftSquare),
-                ']' => self.single_token(TokenKind::RightSquare),
-                '(' => self.single_token(TokenKind::LeftParen),
-                ')' => self.single_token(TokenKind::RightParen),
                 ':' => self.single_token(TokenKind::Colon),
                 '"' => self.surround('"', '"', TokenKind::String),
+                '(' => self.surround('(', ')', TokenKind::ParenSurround),
+                '[' => self.surround('[', ']', TokenKind::SquareSurround),
                 c if Tokenizer::is_identifier_char(c) => self.identifier(),
-                c => self.error(format!("unrecognized character '{}'", c)),
+                _ => self.bad_char(None),
 
             })
         }
@@ -324,13 +353,9 @@ mod test {
     // Some tokens to try. Tuples hold the lexeme and the type
     // Note: Making this longer increases test run time pretty drastically. test_two_tokens runs in
     // O(n^2) where n is TOKENS.len().
-    const TOKENS: [(&'static str, TokenKind); 18] = [
+    const TOKENS: [(&'static str, TokenKind); 16] = [
         ("{", TokenKind::LeftCurly),
         ("}", TokenKind::RightCurly),
-        ("[", TokenKind::LeftSquare),
-        ("]", TokenKind::RightSquare),
-        ("(", TokenKind::LeftParen),
-        (")", TokenKind::RightParen),
         (":", TokenKind::Colon),
         ("\"\"", TokenKind::String), // Empty string
         ("\"foobar\"", TokenKind::String), // Non-whitespace string
@@ -343,17 +368,27 @@ mod test {
         ("s", TokenKind::Identifier), // One-char identifier
         ("foobar", TokenKind::Identifier), // Multi-char identifier
         ("underscore_here", TokenKind::Identifier), // Underscored identifier
+        ("(test builtin)", TokenKind::ParenSurround),
+        ("[test command]", TokenKind::SquareSurround),
     ];
 
-    // Tuple is, in order:
+    // Tuple is:
     // Source that causes the error
     // Successful token parses before the error
-    // Expected description
-    // Expected location
-    const FAILURES: [(&'static str, u32, &'static str, usize); 3] = [
-        ("\"", 0, "expected closing '\"' after '\"' in String", 1),
-        ("fg: blue bg: red { \"some_unfinished_literal ", 7, "expected closing '\"' after '\"' in String", 44),
-        ("style :green { \" this literal is OK?\" ?", 5, "unrecognized character '?'", 38)
+    // Expected error object
+    const FAILURES: [(&'static str, u32, TokenizerError); 5] = [
+        // String bad first and last
+        ("\"", 0, TokenizerError::BadChar(1, None, Some('\"'))),
+        ("fg: blue bg: red { \"some_unfinished_literal ", 7, TokenizerError::BadChar(44, None, Some('"'))),
+
+        // Unterminated paren surround
+        ("style: underline (unfinished paren surround", 3, TokenizerError::BadChar(43, None, Some(')'))),
+
+        // Unterminated square surround
+        ("style: italic [unfinished square surround", 3, TokenizerError::BadChar(41, None, Some(']'))),
+
+        // Unrecognized character
+        ("style :green { \" this literal is OK?\" ?", 5, TokenizerError::BadChar(38, Some('?'), None)),
     ];
 
     // When generating sources, some tokens need spaces around them
@@ -365,12 +400,10 @@ mod test {
         match kind {
             TokenKind::LeftCurly => false,
             TokenKind::RightCurly => false,
-            TokenKind::LeftSquare => false,
-            TokenKind::RightSquare => false,
-            TokenKind::LeftParen => false,
-            TokenKind::RightParen => false,
             TokenKind::Colon => false,
             TokenKind::String => false,
+            TokenKind::SquareSurround => false,
+            TokenKind::ParenSurround => false,
             TokenKind::Foreground => true,
             TokenKind::Background => true,
             TokenKind::Style => true,
@@ -543,17 +576,16 @@ mod test {
     #[test]
     fn test_failures() {
 
-        for &(source, leading_tokens, description, location) in FAILURES.iter() {
+        for &(source, leading_tokens, ref error) in FAILURES.iter() {
             let mut tokenizer = Tokenizer::new(source);
 
             for _ in 0..leading_tokens {
                 tokenizer.next();
             }
 
-            assert_eq!(tokenizer.next(), Some(Err(TokenizerError {
-                location,
-                description: String::from(description),
-            })));
+            let actual_error = tokenizer.next().unwrap().unwrap_err();
+
+            assert_eq!(&actual_error, error);
         }
 
     }
