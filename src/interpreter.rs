@@ -60,6 +60,7 @@ pub fn evaluate<'s>(content: Content<'s>) -> Result<String, InterpreterError> {
     }
 }
 
+#[cfg(test)]
 mod test {
 
     use super::*;

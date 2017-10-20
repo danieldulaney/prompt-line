@@ -9,7 +9,6 @@ use std::result::Result;
 use std::error::Error;
 use std::fmt::Display;
 
-use tokenizer;
 use tokenizer::Token;
 use tokenizer::TokenizerResult;
 use tokenizer::TokenKind;
@@ -619,7 +618,7 @@ mod test {
                 .chain(c_a.0.into_iter())
                 .chain(one_token(TokenKind::RightCurly, "}"))
                 .chain(c_0.0.into_iter())
-                .map(|t| Ok::<_, tokenizer::TokenizerError>(t));
+                .map(|t| Ok::<_, TokenizerError>(t));
 
             let mut parser = Parser::new(&mut tokens);
 
@@ -688,7 +687,7 @@ mod test {
                 .chain(c_ba.0.into_iter())
                 .chain(some_tokens(TokenKind::RightCurly, "}", 9))
                 .chain(c_0.0.into_iter())
-                .map(|t| Ok::<_, tokenizer::TokenizerError>(t));
+                .map(|t| Ok::<_, TokenizerError>(t));
 
             let mut parser = Parser::new(&mut tokens);
 

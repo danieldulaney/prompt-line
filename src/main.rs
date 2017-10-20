@@ -16,7 +16,7 @@ use interpreter::evaluate;
 fn main() {
 
     // Set up inputs
-    let mut tok = Tokenizer::new("fg: blue bg: green { \"bluegreen \" style: underline \"bgu \" fg: yellow (yellow fg) bg: red [red bg]} \" neutral\"");
+    let mut tok = Tokenizer::new("fg: blue [cmd /c date /t]");
     let par = Parser::new(&mut tok);
 
     // Set up terminal outputs
